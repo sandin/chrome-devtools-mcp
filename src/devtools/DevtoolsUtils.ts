@@ -121,11 +121,27 @@ export function overrideDevToolsGlobals({
 
   DevTools.I18n.i18n.registerLocaleDataForTest('en-US', {});
 
+  DevTools.Common.Settings.Settings.instance({
+    forceNew: true,
+    ...createSettingsCreationOptions(),
+  });
+
   DevTools.Formatter.FormatterWorkerPool.FormatterWorkerPool.instance({
     forceNew: true,
     entrypointURL: import.meta
       .resolve('../third_party/devtools-formatter-worker.js'),
   });
+}
+
+function createSettingsCreationOptions() {
+  const settingStorage = new DevTools.Common.Settings.SettingsStorage({});
+  return {
+    syncedStorage: settingStorage,
+    globalStorage: settingStorage,
+    localStorage: settingStorage,
+    settingRegistrations:
+      DevTools.Common.SettingRegistration.getRegisteredSettings(),
+  };
 }
 
 export interface TargetUniverse {
@@ -153,49 +169,33 @@ export class UniverseManager {
     this.#createUniverseFor = factory;
   }
 
-  async init(pages: Page[]) {
-    try {
-      await this.#mutex.acquire();
-      const promises = [];
-      for (const page of pages) {
-        promises.push(
-          this.#createUniverseFor(page).then(targetUniverse =>
-            this.#universes.set(page, targetUniverse),
-          ),
-        );
-      }
-
-      this.#browser.on('targetcreated', this.#onTargetCreated);
-      this.#browser.on('targetdestroyed', this.#onTargetDestroyed);
-
-      await Promise.all(promises);
-    } finally {
-      this.#mutex.release();
-    }
+  init(): void {
+    this.#browser.on('targetdestroyed', this.#onTargetDestroyed);
   }
 
   get(page: Page): TargetUniverse | null {
     return this.#universes.get(page) ?? null;
   }
 
-  dispose() {
-    this.#browser.off('targetcreated', this.#onTargetCreated);
-    this.#browser.off('targetdestroyed', this.#onTargetDestroyed);
-  }
-
-  #onTargetCreated = async (target: PuppeteerTarget) => {
-    const page = await target.page();
+  async getOrCreate(page: Page): Promise<TargetUniverse> {
     try {
       await this.#mutex.acquire();
-      if (!page || this.#universes.has(page)) {
-        return;
+      const existingUniverse = this.#universes.get(page);
+      if (existingUniverse) {
+        return existingUniverse;
       }
 
-      this.#universes.set(page, await this.#createUniverseFor(page));
+      const targetUniverse = await this.#createUniverseFor(page);
+      this.#universes.set(page, targetUniverse);
+      return targetUniverse;
     } finally {
       this.#mutex.release();
     }
-  };
+  }
+
+  dispose() {
+    this.#browser.off('targetdestroyed', this.#onTargetDestroyed);
+  }
 
   #onTargetDestroyed = async (target: PuppeteerTarget) => {
     const page = await target.page();
@@ -212,15 +212,8 @@ export class UniverseManager {
 }
 
 const DEFAULT_FACTORY: TargetUniverseFactoryFn = async (page: Page) => {
-  const settingStorage = new DevTools.Common.Settings.SettingsStorage({});
   const universe = new DevTools.Foundation.Universe.Universe({
-    settingsCreationOptions: {
-      syncedStorage: settingStorage,
-      globalStorage: settingStorage,
-      localStorage: settingStorage,
-      settingRegistrations:
-        DevTools.Common.SettingRegistration.getRegisteredSettings(),
-    },
+    settingsCreationOptions: createSettingsCreationOptions(),
     overrideAutoStartModels: new Set([DevTools.DebuggerModel]),
   });
 
@@ -229,7 +222,6 @@ const DEFAULT_FACTORY: TargetUniverseFactoryFn = async (page: Page) => {
 
   const targetManager = universe.context.get(DevTools.TargetManager);
 
-  targetManager.observeModels(DevTools.DebuggerModel, SKIP_ALL_PAUSES);
   targetManager.observeModels(
     DevTools.NetworkManager.NetworkManager,
     DISABLE_NETWORK,
@@ -244,23 +236,28 @@ const DEFAULT_FACTORY: TargetUniverseFactoryFn = async (page: Page) => {
     undefined,
     connection,
   );
+  const debuggerModel = target.model(DevTools.DebuggerModel);
+  if (!debuggerModel) {
+    throw new Error('Could not create DebuggerModel');
+  }
+  const skipAllPausesPromise = debuggerModel.agent.invoke_setSkipAllPauses({
+    skip: true,
+  });
+  await waitForDebuggerReady(debuggerModel);
+  await skipAllPausesPromise;
   return {target, universe, session};
 };
 
-// We don't want to pause any DevTools universe session ever on the MCP side.
-//
-// Note that calling `setSkipAllPauses` only affects the session on which it was
-// sent. This means DevTools can still pause, step and do whatever. We just won't
-// see the `Debugger.paused`/`Debugger.resumed` events on the MCP side.
-const SKIP_ALL_PAUSES = {
-  modelAdded(model: DevTools.DebuggerModel): void {
-    void model.agent.invoke_setSkipAllPauses({skip: true});
-  },
-
-  modelRemoved(): void {
-    // Do nothing.
-  },
-};
+async function waitForDebuggerReady(model: DevTools.DebuggerModel) {
+  const signal = AbortSignal.timeout(5_000);
+  // DebuggerModel starts enabling in its constructor.
+  while (!model.isReadyToPause()) {
+    if (signal.aborted) {
+      throw signal.reason;
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
 
 // Not recording network requests in the DevTools universe.
 //

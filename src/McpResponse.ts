@@ -583,11 +583,14 @@ export class McpResponse implements Response {
       const consoleMessageStableId = this.#attachedConsoleMessageId;
       if ('args' in message || message instanceof UncaughtError) {
         const consoleMessage = message as ConsoleMessage | UncaughtError;
-        const devTools = context.getDevToolsUniverse(this.#page);
+        // Chrome blocks Debugger.enable while a modal dialog is open.
+        const devTools = this.#page.dialog
+          ? undefined
+          : await context.getOrCreateDevToolsUniverse(this.#page);
         detailedConsoleMessage = await ConsoleFormatter.from(consoleMessage, {
           id: consoleMessageStableId,
           fetchDetailedData: true,
-          devTools: devTools ?? undefined,
+          devTools,
         });
       } else if (message instanceof DevTools.AggregatedIssue) {
         const formatter = new IssueFormatter(message, {

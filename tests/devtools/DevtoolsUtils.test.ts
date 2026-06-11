@@ -11,7 +11,7 @@ import sinon from 'sinon';
 
 import {UniverseManager} from '../../src/devtools/DevtoolsUtils.js';
 import {DevTools} from '../../src/third_party/index.js';
-import type {Browser, Target} from '../../src/third_party/index.js';
+import type {Browser} from '../../src/third_party/index.js';
 import {serverHooks} from '../server.js';
 import {
   getMockBrowser,
@@ -28,36 +28,28 @@ describe('UniverseManager', () => {
     sinon.restore();
   });
 
-  it('calls the factory for existing pages', async () => {
+  it('does not create universes during initialization', async () => {
     const browser = getMockBrowser();
     const factory = sinon.stub().resolves({});
     const manager = new UniverseManager(browser, factory);
-    await manager.init(await browser.pages());
+    manager.init();
 
-    const page = (await browser.pages())[0];
-    sinon.assert.calledOnceWithExactly(factory, page);
+    sinon.assert.notCalled(factory);
   });
 
-  it('calls the factory only once for the same page', async () => {
+  it('calls the factory only once for concurrent requests', async () => {
     const browser = {
       ...mockListener(),
     } as unknown as Browser;
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    const factory = sinon.stub().returns(new Promise(() => {})); // Don't resolve.
+    const factory = sinon.stub().resolves({});
     const manager = new UniverseManager(browser, factory);
-    await manager.init([]);
-
-    sinon.assert.notCalled(factory);
-
     const page = getMockPage();
-    browser.emit('targetcreated', {
-      page: () => Promise.resolve(page),
-    } as Target);
-    browser.emit('targetcreated', {
-      page: () => Promise.resolve(page),
-    } as Target);
 
-    await new Promise(r => setTimeout(r, 0)); // One event loop tick for the micro task queue to run.
+    await Promise.all([
+      manager.getOrCreate(page),
+      manager.getOrCreate(page),
+      manager.getOrCreate(page),
+    ]);
 
     sinon.assert.calledOnceWithExactly(factory, page);
   });
@@ -65,7 +57,8 @@ describe('UniverseManager', () => {
   it('works with a real browser', async () => {
     await withBrowser(async (browser, page) => {
       const manager = new UniverseManager(browser);
-      await manager.init([page]);
+      manager.init();
+      await manager.getOrCreate(page);
 
       assert.notStrictEqual(manager.get(page), null);
     });
@@ -74,7 +67,8 @@ describe('UniverseManager', () => {
   it('ignores pauses', async () => {
     await withBrowser(async (browser, page) => {
       const manager = new UniverseManager(browser);
-      await manager.init([page]);
+      manager.init();
+      await manager.getOrCreate(page);
       const targetUniverse = manager.get(page);
       assert.ok(targetUniverse);
       const model = targetUniverse.target.model(DevTools.DebuggerModel);
@@ -95,7 +89,8 @@ describe('UniverseManager', () => {
 
     await withBrowser(async (browser, page) => {
       const manager = new UniverseManager(browser);
-      await manager.init([page]);
+      manager.init();
+      await manager.getOrCreate(page);
       const targetUniverse = manager.get(page);
       assert.ok(targetUniverse);
 

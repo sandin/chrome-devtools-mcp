@@ -150,7 +150,7 @@ export class McpContext implements Context {
     const workers = await this.createExtensionServiceWorkersSnapshot();
     await this.#networkCollector.init(pages);
     await this.#consoleCollector.init(pages);
-    await this.#devtoolsUniverseManager.init(pages);
+    this.#devtoolsUniverseManager.init();
     await this.#serviceWorkerConsoleCollector.init(workers);
   }
 
@@ -290,6 +290,10 @@ export class McpContext implements Context {
 
   getDevToolsUniverse(page: McpPage): TargetUniverse | null {
     return this.#devtoolsUniverseManager.get(page.pptrPage);
+  }
+
+  getOrCreateDevToolsUniverse(page: McpPage): Promise<TargetUniverse> {
+    return this.#devtoolsUniverseManager.getOrCreate(page.pptrPage);
   }
 
   getConsoleMessageStableId(

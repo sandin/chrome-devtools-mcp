@@ -212,8 +212,7 @@ describe('emulation', () => {
     it('applies cpu throttling to secondary session', async () => {
       await withMcpContext(async (response, context) => {
         const mcpPage = context.getSelectedMcpPage();
-        const universe = context.getDevToolsUniverse(mcpPage);
-        assert.ok(universe);
+        const universe = await context.getOrCreateDevToolsUniverse(mcpPage);
 
         const sendSpy = mock.method(universe.session, 'send');
 
